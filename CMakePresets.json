@@ -28,7 +28,8 @@
       "name": "default",
       "configurePreset": "default",
       "output": {
-        "outputOnFailure": true
+        "outputOnFailure": true,
+        "verbosity": "verbose"
       }
     }
   ],

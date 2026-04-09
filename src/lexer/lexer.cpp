@@ -156,6 +156,8 @@ std::vector<Token> Lexer::tokenize() {
     while (!isAtEnd()) {
         skipWhitespace();
 
+        if (isAtEnd()) break;
+
         char c = currentChar();
 
         if (std::isalpha(c)) {

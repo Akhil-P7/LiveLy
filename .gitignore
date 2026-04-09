@@ -6,7 +6,6 @@ CMakeUserPresets.json
 .cmake/
 .cache/
 *.obj
-*.exe
 *.pdb
 *.ilk
 *.log
