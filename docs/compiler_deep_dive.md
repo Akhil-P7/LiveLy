@@ -376,7 +376,7 @@ body = parseBlock();  // recursively parse statements until '}'
 ## 4. Phase 3 — Abstract Syntax Tree (AST)
 
 ### Theory: What Is an AST?
-
+ 
 The Abstract Syntax Tree is the central data structure of a compiler. It represents
 the **logical structure** of a program, stripped of syntactic noise (semicolons,
 parentheses, keywords). Every node in the tree is either a **statement** (does something)
