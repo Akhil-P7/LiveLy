@@ -1,6 +1,6 @@
 # LiveLy Language Specification
 
-Version: 0.3 (current implementation)
+Version: 0.4 (current implementation)
 
 ## 1. Overview
 
@@ -11,15 +11,17 @@ Current compiler pipeline:
 1. Lexical analysis (tokenization)
 2. Parsing (AST construction)
 3. Semantic analysis (type and symbol checks)
+4. Intermediate representation (Three-Address Code generation)
+5. Bytecode generation (stack-machine instructions)
 
-The current implementation validates programs and prints compiler diagnostics; execution backend stages (VM/JIT integration) are outside this document.
+The current implementation validates programs and generates bytecode with compiler diagnostics printed at each stage; execution backend stages (VM/JIT) are outside this document.
 
 ## 2. Design Principles
 
 1. Explicit typing: every variable declaration must include a type.
 2. Strong static checks: type mismatches are rejected before execution.
 3. Predictable syntax: statement-oriented grammar with explicit delimiters (`;`, `{}`, `()`).
-4. Small core: only essential constructs are included in v0.3.
+4. Small core: only essential constructs are included in v0.4.
 
 ## 3. Lexical Specification
 
@@ -99,7 +101,7 @@ The lexer appends an explicit end-of-file token after tokenization completes.
 
 ## 4. Grammar (EBNF)
 
-The following grammar describes v0.3 behavior:
+The following grammar describes v0.4 behavior:
 
 ```ebnf
 program          = { statement } ;
@@ -309,7 +311,7 @@ Semantic checks raise errors for:
 5. Invalid operand types for operators
 6. Return type mismatch
 
-## 11. Known Current Limitations (v0.3)
+## 11. Known Current Limitations (v0.4)
 
 These are intentionally documented as current-state behavior:
 
@@ -320,6 +322,8 @@ These are intentionally documented as current-state behavior:
 5. No comment syntax in lexer.
 6. No separate lexical token for `IS` in active parsing flow (`is` is tokenized as assignment).
 7. Return-path completeness checks (for example, ensuring all branches return) are not yet enforced.
+8. `FunctionDecl` and `ReturnStmt` are not yet lowered to IR/Bytecode (skipped with a warning).
+9. No `CALL`/`RET` opcodes in bytecode — function execution is not yet supported.
 
 ## 12. Minimal Complete Example
 
@@ -349,4 +353,4 @@ forge clamp(n:int, limit:int): int {
 }
 ```
 
-This program is valid under the current LiveLy lexer, parser, and semantic analyzer implementation.
+This program is valid under the current LiveLy lexer, parser, semantic analyzer, TAC generator, and bytecode generator implementation. Note: the `forge` function declaration passes semantic analysis but is skipped during IR/Bytecode generation with a warning.

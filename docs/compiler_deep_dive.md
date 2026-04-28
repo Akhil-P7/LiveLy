@@ -1,7 +1,8 @@
 # LiveLy Compiler — Deep Dive: Theory & Implementation
 
-> A comprehensive explanation of how the Lexer, Parser, AST, and Semantic Analyzer
-> work — covering both the Computer Science theory and the actual LiveLy implementation.
+> A comprehensive explanation of how the Lexer, Parser, AST, Semantic Analyzer,
+> Intermediate Representation, and Bytecode Generator work — covering both the
+> Computer Science theory and the actual LiveLy implementation.
 
 ---
 
@@ -12,7 +13,9 @@
 3. [Phase 2 — Parsing (Parser)](#3-phase-2--parsing-parser)
 4. [Phase 3 — Abstract Syntax Tree (AST)](#4-phase-3--abstract-syntax-tree-ast)
 5. [Phase 4 — Semantic Analysis](#5-phase-4--semantic-analysis)
-6. [How They All Connect](#6-how-they-all-connect)
+6. [Phase 5 — Intermediate Representation (TAC)](#6-phase-5--intermediate-representation-tac)
+7. [Phase 6 — Bytecode Generation](#7-phase-6--bytecode-generation)
+8. [How They All Connect](#8-how-they-all-connect)
 
 ---
 
@@ -27,10 +30,10 @@ where each stage takes the output of the previous stage and refines it further.
 The classic compiler pipeline:
 
 ```
-Source Code  →  Lexer  →  Parser  →  AST  →  Semantic Analyzer  →  [Backend...]
-     |              |          |        |              |
-  raw text      tokens     parse     tree        validated
-  (string)      (list)     tree    (in memory)     tree
+Source Code → Lexer → Parser → AST → Semantic → TAC (IR) → Bytecode → [VM...]
+     |           |        |       |        |          |           |
+  raw text    tokens    parse   tree   validated   3-address   stack-based
+  (string)    (list)    tree  (memory)   tree       code       instructions
 ```
 
 Each phase has a single, well-defined responsibility:
@@ -41,13 +44,15 @@ Each phase has a single, well-defined responsibility:
 | Parser | Token stream | AST (tree) | Enforce grammar rules / structure |
 | AST | (data structure) | (data structure) | Represent program structure in memory |
 | Semantic Analyzer | AST | Validated AST | Enforce meaning rules (types, scope) |
+| TAC Generator | Validated AST | TAC instructions | Linearise tree into 3-address code |
+| Bytecode Generator | TAC instructions | Bytecode | Produce stack-machine instructions |
 
 ### LiveLy Implementation
 
 In LiveLy, the pipeline is orchestrated by `main.cpp`:
 
 ```cpp
-std::string source = readFile(argv[1]);     // raw text
+std::string source = readFile(argv[1]);       // raw text
 Lexer lexer(source);
 std::vector<Token> tokens = lexer.tokenize(); // → tokens
 Parser parser(tokens);
@@ -55,6 +60,10 @@ auto ast = parser.parse();                    // → AST
 ASTPrinter::printProgram(ast);                // → visual output
 SemanticAnalyzer analyzer;
 analyzer.analyze(ast);                        // → validated
+TACGenerator tacGen;
+auto tac = tacGen.generate(ast);              // → 3-address code
+BytecodeGenerator bcGen;
+auto bytecode = bcGen.generate(tac);          // → bytecode
 ```
 
 Each component lives in its own directory and only depends on the component before it.
@@ -660,7 +669,261 @@ std::string SemanticAnalyzer::analyzeExpression(Expression* expr) {
 
 ---
 
-## 6. How They All Connect
+## 6. Phase 5 — Intermediate Representation (TAC)
+
+### Theory: What Is an Intermediate Representation?
+
+After the frontend validates that a program is syntactically and semantically correct,
+the compiler must **lower** the tree into a flat, linear form that is closer to machine
+execution. This intermediate representation (IR) sits between the high-level AST and
+the low-level bytecode.
+
+The most common IR is **Three-Address Code (TAC)**, where every instruction has at most
+three operands: a result, and up to two arguments.
+
+```
+t0 = 4 - 1       // SUB t0, 4, 1
+t1 = 3 * t0       // MUL t1, 3, t0
+t2 = 2 + t1       // ADD t2, 2, t1
+y  = t2           // ASSIGN y, t2
+```
+
+**Key properties of TAC:**
+
+- Each instruction performs exactly one operation.
+- Complex expressions are broken into atomic steps using **temporary variables** (`t0`, `t1`, ...).
+- Control flow uses **labels** and **jumps** instead of nested blocks.
+- The flat list is easy to optimise, reorder, and translate to machine code.
+
+**Control flow lowering:**
+
+Nested `if/else` and `loop` blocks are converted to labels and conditional jumps:
+
+```
+// Source: check (x >= 5) { emit x; } otherwise { emit 0; }
+t4 = x >= 5
+IF_FALSE L0, t4       // if t4 is false, jump to L0
+EMIT x
+GOTO L1               // skip else branch
+LABEL L0              // else branch starts
+EMIT 0
+LABEL L1              // end of if
+```
+
+### LiveLy Implementation
+
+**Files:** `src/ir/tac.h`, `src/ir/tac_generator.h`, `src/ir/tac_generator.cpp`
+
+#### TAC Instruction Format (`tac.h`)
+
+```cpp
+enum class TACOp {
+    ADD, SUB, MUL, DIV,           // arithmetic
+    GT, LT, GE, LE, EQ, NEQ,     // comparison
+    ASSIGN,                        // variable assignment
+    LABEL, GOTO, IF_FALSE,        // control flow
+    EMIT                           // output
+};
+
+struct TACInstruction {
+    TACOp op;
+    std::string result;   // destination or label name
+    std::string arg1;     // first operand
+    std::string arg2;     // second operand (binary ops)
+};
+```
+
+#### Generator Architecture (`tac_generator.cpp`)
+
+The generator walks the AST recursively, maintaining two counters:
+- `tempCounter` — produces fresh temporaries (`t0`, `t1`, `t2`, ...)
+- `labelCounter` — produces fresh labels (`L0`, `L1`, `L2`, ...)
+
+**Expression lowering** is the key operation — every complex expression is
+decomposed into a sequence of TAC instructions that store intermediate results
+in temporaries:
+
+```cpp
+std::string TACGenerator::generateExpression(Expression* expr) {
+    if (auto bin = dynamic_cast<BinaryExpr*>(expr)) {
+        std::string left  = generateExpression(bin->left.get());
+        std::string right = generateExpression(bin->right.get());
+        std::string temp  = newTemp();  // t0, t1, ...
+        instructions.emplace_back(op, temp, left, right);
+        return temp;  // caller uses this temporary
+    }
+    // ...
+}
+```
+
+**Loop lowering** generates the classic label-jump pattern:
+
+```cpp
+// cycle (condition) { body }
+std::string startLabel = newLabel();  // L2
+std::string endLabel   = newLabel();  // L3
+
+instructions.emplace_back(TACOp::LABEL, startLabel);
+std::string cond = generateExpression(loop->condition.get());
+instructions.emplace_back(TACOp::IF_FALSE, endLabel, cond);
+// ... generate body ...
+instructions.emplace_back(TACOp::GOTO, startLabel);
+instructions.emplace_back(TACOp::LABEL, endLabel);
+```
+
+> **Note:** `FunctionDecl` and `ReturnStmt` are not yet lowered to IR — the
+> generator skips them with a warning. This will be addressed when `CALL`/`RET`
+> opcodes are added.
+
+#### Example: `hello.lv` TAC Output
+
+```
+ASSIGN x 10
+SUB t0 4 1
+MUL t1 3 t0
+ADD t2 2 t1
+ASSIGN y t2
+ASSIGN aliveflag alive
+DIV t3 x y
+ASSIGN x t3
+GE t4 x 5
+IF_FALSE L0 t4
+EMIT x
+GOTO L1
+LABEL L0
+EMIT 0
+LABEL L1
+LABEL L2
+NEQ t5 x 0
+IF_FALSE L3 t5
+SUB t6 x 1
+ASSIGN x t6
+GOTO L2
+LABEL L3
+```
+
+---
+
+## 7. Phase 6 — Bytecode Generation
+
+### Theory: What Is Bytecode?
+
+Bytecode is a compact, machine-oriented instruction set designed for a **stack-based
+virtual machine**. Unlike TAC (which uses named temporaries), bytecode operates on
+an implicit **operand stack** — values are pushed onto the stack and operators pop
+their arguments from it.
+
+```
+TAC:        ADD t2, 2, t1        (uses named operands)
+Bytecode:   PUSH_CONST 2         (push 2 onto stack)
+            LOAD t1              (push value of t1 onto stack)
+            ADD                  (pop two, push result)
+            STORE t2             (pop result into t2)
+```
+
+**Key design decisions:**
+
+- **`PUSH_CONST`** vs **`LOAD`**: Numeric literals and boolean constants (`alive`/`dead`)
+  use `PUSH_CONST`. Named variables use `LOAD`. This distinction is critical — without
+  it, the VM cannot tell whether `10` means "the number ten" or "a variable called 10".
+- **Jump targets are bytecode indices**: Labels from TAC are resolved to concrete
+  instruction addresses during a two-pass compilation.
+
+### LiveLy Implementation
+
+**Files:** `src/bytecode/bytecode.h`, `src/bytecode/bytecode_generator.h`, `src/bytecode/bytecode_generator.cpp`
+
+#### Instruction Set (`bytecode.h`)
+
+```cpp
+enum class OpCode {
+    PUSH_CONST,          // push a literal value
+    LOAD,                // push a variable's value
+    STORE,               // pop and store into variable
+
+    ADD, SUB, MUL, DIV,  // arithmetic (pop 2, push 1)
+    GT, LT, GE, LE,     // comparison (pop 2, push bool)
+    EQ, NEQ,
+
+    JUMP,                // unconditional jump
+    JUMP_IF_FALSE,       // conditional jump (pop 1)
+
+    PRINT                // pop and output
+};
+```
+
+#### Two-Pass Compilation
+
+The bytecode generator uses a **two-pass** approach:
+
+**Pass 1 — Label Resolution:** Scans all TAC instructions and computes the bytecode
+index each label maps to. This is non-trivial because a single TAC instruction may
+expand to multiple bytecode instructions:
+
+| TAC Opcode | Bytecode Instructions | Count |
+|------------|----------------------|-------|
+| `ASSIGN` | `PUSH_CONST`/`LOAD` + `STORE` | 2 |
+| `ADD` (etc.) | `LOAD` + `LOAD` + `OP` + `STORE` | 4 |
+| `IF_FALSE` | `LOAD` + `JUMP_IF_FALSE` | 2 |
+| `GOTO` | `JUMP` | 1 |
+| `EMIT` | `LOAD` + `PRINT` | 2 |
+| `LABEL` | *(none — marker only)* | 0 |
+
+```cpp
+void BytecodeGenerator::firstPass(const std::vector<TACInstruction>& tac) {
+    int index = 0;
+    for (const auto& instr : tac) {
+        if (instr.op == TACOp::LABEL) {
+            labelMap[instr.result] = index;
+        } else {
+            index += bytecodeCountForTAC(instr.op);
+        }
+    }
+}
+```
+
+**Pass 2 — Code Emission:** Walks through TAC again, emitting bytecode
+instructions. The `emitLoad()` helper distinguishes constants from variables:
+
+```cpp
+void BytecodeGenerator::emitLoad(const std::string& operand) {
+    if (isNumber(operand) || operand == "alive" || operand == "dead")
+        instructions.emplace_back(OpCode::PUSH_CONST, operand);
+    else
+        instructions.emplace_back(OpCode::LOAD, operand);
+}
+```
+
+#### Example: `hello.lv` Bytecode Output (excerpt)
+
+```
+ 0: PUSH_CONST 10        // bind x:int is 10
+ 1: STORE x
+ 2: PUSH_CONST 4         // sub-expression: 4 - 1
+ 3: PUSH_CONST 1
+ 4: SUB
+ 5: STORE t0
+ ...
+28: LOAD t4              // check (x >= 5)
+29: JUMP_IF_FALSE 33     // → else branch at bytecode index 33
+30: LOAD x               // emit x (then branch)
+31: PRINT
+32: JUMP 35              // skip else
+33: PUSH_CONST 0         // emit 0 (else branch)
+34: PRINT
+35: LOAD x               // cycle (x != 0)
+ ...
+40: JUMP_IF_FALSE 48     // → loop exit
+ ...
+47: JUMP 35              // → back to loop start
+```
+
+Jump targets (33, 35, 48) are resolved correctly by `firstPass` — each points
+to the exact bytecode index of the target instruction.
+
+---
+
+## 8. How They All Connect
 
 ### The Complete Data Flow
 
@@ -678,7 +941,7 @@ std::string SemanticAnalyzer::analyzeExpression(Expression* expr) {
               └────────────┼────────────┘
                            │
                     ┌──────┴──────┐
-                    │   PARSER   │
+                    │   PARSER    │
                     └──────┬──────┘
                            │
                      VarDecl Node
@@ -693,9 +956,20 @@ std::string SemanticAnalyzer::analyzeExpression(Expression* expr) {
                     └──────┬──────┘
                            │
               typeOf(LiteralExpr("10")) → "int"
-              declared type: "int"
-              "int" == "int"  →  ✓ PASS
-              declare("x", "int") in scope stack
+              declared type: "int"  →  ✓ PASS
+                           │
+                    ┌──────┴──────┐
+                    │  TAC (IR)   │
+                    └──────┬──────┘
+                           │
+              ASSIGN x 10   (flat linear instruction)
+                           │
+                    ┌──────┴──────┐
+                    │  BYTECODE   │
+                    └──────┬──────┘
+                           │
+              0: PUSH_CONST 10
+              1: STORE x
 ```
 
 ### Module Dependency Graph
@@ -705,29 +979,37 @@ token.h ◄──── lexer.h/cpp
    │
    └──────── ast.h ◄──── ast_printer.h
                │
-               └──── parser.h/cpp
+               ├──── parser.h/cpp
                │
-               └──── semantic.h/cpp
-                        │
-                 main.cpp (orchestrator)
+               ├──── semantic.h/cpp
+               │
+               ├──── tac.h ◄──── tac_generator.h/cpp
+               │                       │
+               │              bytecode.h ◄──── bytecode_generator.h/cpp
+               │
+               └──── main.cpp (orchestrator)
 ```
 
-Every module only depends on the modules above it in this graph. The Lexer has no
-knowledge of the Parser; the Parser has no knowledge of the Semantic Analyzer.
-This strict layering means any module can be tested independently and replaced
-without breaking the rest of the system.
+Every module only depends on the modules above it in this graph. The IR layer
+depends on `ast.h` (for AST node types) and the Bytecode layer depends on
+`tac.h` (for TAC instruction types). This strict layering means any module
+can be tested independently.
 
 ### CMake Test Integration
 
 ```cmake
-Test 1: lexer_hello          → validates token stream output
-Test 2: parser_hello         → validates AST generation + pipeline completion
-Test 3: semantic_hello       → validates type-safe code passes analysis
+Test 1: lexer_hello            → validates token stream output
+Test 2: parser_hello           → validates AST generation + pipeline completion
+Test 3: semantic_hello         → validates type-safe code passes analysis
 Test 4: semantic_type_mismatch → validates "bind x:int is alive;" is rejected
-Test 5: semantic_undefined   → validates "emit y;" (undeclared) is rejected
+Test 5: semantic_undefined     → validates "emit y;" (undeclared) is rejected
+Test 6: tac_hello              → validates TAC contains ASSIGN + EMIT
+Test 7: tac_loop               → validates TAC contains LABEL + IF_FALSE + GOTO
+Test 8: bytecode_hello         → validates bytecode contains PUSH_CONST + STORE + PRINT
+Test 9: bytecode_loop          → validates bytecode contains JUMP_IF_FALSE + JUMP
 ```
 
-Running `cmake --workflow --preset ci` executes all 5 tests in one command,
+Running `cmake --workflow --preset ci` executes all 9 tests in one command,
 giving you a complete regression suite that verifies every phase of the compiler
 pipeline from end to end.
 
@@ -737,12 +1019,14 @@ pipeline from end to end.
 
 | Phase | Theory | LiveLy Implementation | Key File |
 |-------|--------|----------------------|-----------|
-| Lexer | DFA / Finite State Machine | Character-by-character scanner with keyword hash map | `lexer.cpp` (183 lines) |
-| Parser | LL(1) Recursive Descent | One function per grammar rule, precedence via call depth | `parser.cpp` (321 lines) |
-| AST | Tree data structure | C++17 class hierarchy with `unique_ptr` ownership | `ast.h` (128 lines) |
-| Semantic | Symbol Table + Type System | Scope stack with inside-out lookup and recursive type inference | `semantic.cpp` (198 lines) |
+| Lexer | DFA / Finite State Machine | Character-by-character scanner with keyword hash map | `lexer.cpp` |
+| Parser | LL(1) Recursive Descent | One function per grammar rule, precedence via call depth | `parser.cpp` |
+| AST | Tree data structure | C++17 class hierarchy with `unique_ptr` ownership | `ast.h` |
+| Semantic | Symbol Table + Type System | Scope stack with inside-out lookup and recursive type inference | `semantic.cpp` |
+| TAC (IR) | Three-Address Code | Linearises AST into flat instructions with temps and labels | `tac_generator.cpp` |
+| Bytecode | Stack-machine instructions | Two-pass compiler: label resolution then code emission | `bytecode_generator.cpp` |
 
 Each phase transforms the program into a progressively more refined representation,
-catching different classes of errors along the way. Together, they form the complete
-**frontend** of the LiveLy compiler — everything up to the point where we start
-generating executable code (bytecode, VM, JIT — the backend phases still to come).
+catching different classes of errors along the way. Phases 1–4 form the **frontend**
+(validation and structure), while Phases 5–6 form the **middle-end** (lowering to
+executable form). The **backend** (VM execution, JIT compilation) is next.

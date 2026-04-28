@@ -8,6 +8,8 @@
 #include "parser/parser.h"
 #include "ast/ast_printer.h"
 #include "semantic/semantic.h"
+#include "ir/tac_generator.h"
+#include "bytecode/bytecode_generator.h"
 
 // Helper: Convert TokenType to a human-readable string.
 std::string tokenTypeToString(TokenType type) {
@@ -58,6 +60,51 @@ std::string tokenTypeToString(TokenType type) {
     return "UNKNOWN";
 }
 
+// Helper: Convert TACOp to a human-readable string.
+std::string tacOpToString(TACOp op) {
+    switch (op) {
+        case TACOp::ADD:      return "ADD";
+        case TACOp::SUB:      return "SUB";
+        case TACOp::MUL:      return "MUL";
+        case TACOp::DIV:      return "DIV";
+        case TACOp::GT:       return "GT";
+        case TACOp::LT:       return "LT";
+        case TACOp::GE:       return "GE";
+        case TACOp::LE:       return "LE";
+        case TACOp::EQ:       return "EQ";
+        case TACOp::NEQ:      return "NEQ";
+        case TACOp::ASSIGN:   return "ASSIGN";
+        case TACOp::LABEL:    return "LABEL";
+        case TACOp::GOTO:     return "GOTO";
+        case TACOp::IF_FALSE: return "IF_FALSE";
+        case TACOp::EMIT:     return "EMIT";
+    }
+    return "UNKNOWN";
+}
+
+// Helper: Convert OpCode to a human-readable string.
+std::string opCodeToString(OpCode op) {
+    switch (op) {
+        case OpCode::PUSH_CONST:    return "PUSH_CONST";
+        case OpCode::LOAD:          return "LOAD";
+        case OpCode::STORE:         return "STORE";
+        case OpCode::ADD:           return "ADD";
+        case OpCode::SUB:           return "SUB";
+        case OpCode::MUL:           return "MUL";
+        case OpCode::DIV:           return "DIV";
+        case OpCode::GT:            return "GT";
+        case OpCode::LT:            return "LT";
+        case OpCode::GE:            return "GE";
+        case OpCode::LE:            return "LE";
+        case OpCode::EQ:            return "EQ";
+        case OpCode::NEQ:           return "NEQ";
+        case OpCode::JUMP:          return "JUMP";
+        case OpCode::JUMP_IF_FALSE: return "JUMP_IF_FALSE";
+        case OpCode::PRINT:         return "PRINT";
+    }
+    return "UNKNOWN";
+}
+
 // Read entire file contents into a string.
 std::string readFile(const std::string& path) {
     std::ifstream file(path);
@@ -71,10 +118,10 @@ std::string readFile(const std::string& path) {
 }
 
 // Main — LiveLy Compiler Pipeline
-// Source → Lexer (Tokens) → Parser (AST) → AST Print → Semantic Analysis
+// Source → Lexer → Parser (AST) → Semantic → TAC (IR) → Bytecode
 int main(int argc, char* argv[]) {
     std::cout << "====================================\n";
-    std::cout << "   LiveLy Compiler v0.3             \n";
+    std::cout << "   LiveLy Compiler v0.4             \n";;
     std::cout << "====================================\n";
 
     if (argc < 2) {
@@ -117,6 +164,35 @@ int main(int argc, char* argv[]) {
         analyzer.analyze(ast);
 
         std::cout << "\n[Phase 5] Semantic analysis passed — all types valid.\n";
+
+        // PHASE 6: IR Generation (Three-Address Code)
+        TACGenerator tacGen;
+        auto tac = tacGen.generate(ast);
+
+        std::cout << "\n[Phase 6] TAC generated — " << tac.size()
+                  << " instruction" << (tac.size() != 1 ? "s" : "") << ".\n";
+        std::cout << "\n--- THREE-ADDRESS CODE ---\n";
+        for (const auto& instr : tac) {
+            std::cout << "  " << tacOpToString(instr.op);
+            if (!instr.result.empty()) std::cout << " " << instr.result;
+            if (!instr.arg1.empty()) std::cout << " " << instr.arg1;
+            if (!instr.arg2.empty()) std::cout << " " << instr.arg2;
+            std::cout << "\n";
+        }
+
+        // PHASE 7: Bytecode Generation
+        BytecodeGenerator bcGen;
+        auto bytecode = bcGen.generate(tac);
+
+        std::cout << "\n[Phase 7] Bytecode generated — " << bytecode.size()
+                  << " instruction" << (bytecode.size() != 1 ? "s" : "") << ".\n";
+        std::cout << "\n--- BYTECODE ---\n";
+        for (size_t i = 0; i < bytecode.size(); i++) {
+            std::cout << "  " << i << ": " << opCodeToString(bytecode[i].op);
+            if (!bytecode[i].operand.empty())
+                std::cout << " " << bytecode[i].operand;
+            std::cout << "\n";
+        }
 
         std::cout << "\n[OK] All compiler phases completed successfully.\n";
 

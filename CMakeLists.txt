@@ -65,6 +65,46 @@ set_tests_properties(semantic_undefined PROPERTIES
     PASS_REGULAR_EXPRESSION "Semantic Error.*Undefined variable"
 )
 
+# ---- Test 6: TAC generation smoke-test ----
+add_test(
+    NAME tac_hello
+    COMMAND lively ${CMAKE_CURRENT_SOURCE_DIR}/examples/hello.lv
+)
+
+set_tests_properties(tac_hello PROPERTIES
+    PASS_REGULAR_EXPRESSION "THREE-ADDRESS CODE.*ASSIGN.*EMIT"
+)
+
+# ---- Test 7: TAC loop control-flow ----
+add_test(
+    NAME tac_loop
+    COMMAND lively ${CMAKE_CURRENT_SOURCE_DIR}/examples/loop_test.lv
+)
+
+set_tests_properties(tac_loop PROPERTIES
+    PASS_REGULAR_EXPRESSION "THREE-ADDRESS CODE.*LABEL.*IF_FALSE.*GOTO"
+)
+
+# ---- Test 8: Bytecode generation smoke-test ----
+add_test(
+    NAME bytecode_hello
+    COMMAND lively ${CMAKE_CURRENT_SOURCE_DIR}/examples/hello.lv
+)
+
+set_tests_properties(bytecode_hello PROPERTIES
+    PASS_REGULAR_EXPRESSION "BYTECODE.*PUSH_CONST.*STORE.*PRINT"
+)
+
+# ---- Test 9: Bytecode loop jumps ----
+add_test(
+    NAME bytecode_loop
+    COMMAND lively ${CMAKE_CURRENT_SOURCE_DIR}/examples/loop_test.lv
+)
+
+set_tests_properties(bytecode_loop PROPERTIES
+    PASS_REGULAR_EXPRESSION "BYTECODE.*JUMP_IF_FALSE.*JUMP"
+)
+
 # ---- Convenience: run hello example manually ----
 add_custom_target(run_hello
     COMMAND lively ${CMAKE_CURRENT_SOURCE_DIR}/examples/hello.lv
