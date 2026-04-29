@@ -15,6 +15,18 @@ add_executable(lively ${SOURCES})
 
 include(CTest)
 
+add_executable(lively_vm_tests
+    tests/vm_tests.cpp
+    src/vm/vm.cpp
+)
+
+target_include_directories(lively_vm_tests PRIVATE src)
+
+add_test(
+    NAME vm_runtime
+    COMMAND lively_vm_tests
+)
+
 # ---- Test 1: Lexer smoke-test (token stream) ----
 add_test(
     NAME lexer_hello

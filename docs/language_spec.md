@@ -13,8 +13,10 @@ Current compiler pipeline:
 3. Semantic analysis (type and symbol checks)
 4. Intermediate representation (Three-Address Code generation)
 5. Bytecode generation (stack-machine instructions)
+6. Virtual machine execution (bytecode interpretation)
 
-The current implementation validates programs and generates bytecode with compiler diagnostics printed at each stage; execution backend stages (VM/JIT) are outside this document.
+The implementation validates programs through phases 1–3, lowers to bytecode in phases 4–5,
+and executes via a stack-based virtual machine in phase 6. Compiler diagnostics are printed at each stage.
 
 ## 2. Design Principles
 

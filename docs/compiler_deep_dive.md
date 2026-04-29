@@ -15,7 +15,8 @@
 5. [Phase 4 — Semantic Analysis](#5-phase-4--semantic-analysis)
 6. [Phase 5 — Intermediate Representation (TAC)](#6-phase-5--intermediate-representation-tac)
 7. [Phase 6 — Bytecode Generation](#7-phase-6--bytecode-generation)
-8. [How They All Connect](#8-how-they-all-connect)
+8. [Phase 7 — Virtual Machine Execution](#8-phase-7--virtual-machine-execution)
+9. [How They All Connect](#9-how-they-all-connect)
 
 ---
 
@@ -46,6 +47,7 @@ Each phase has a single, well-defined responsibility:
 | Semantic Analyzer | AST | Validated AST | Enforce meaning rules (types, scope) |
 | TAC Generator | Validated AST | TAC instructions | Linearise tree into 3-address code |
 | Bytecode Generator | TAC instructions | Bytecode | Produce stack-machine instructions |
+| Virtual Machine | Bytecode | Program output | Execute bytecode instructions |
 
 ### LiveLy Implementation
 
@@ -64,6 +66,8 @@ TACGenerator tacGen;
 auto tac = tacGen.generate(ast);              // → 3-address code
 BytecodeGenerator bcGen;
 auto bytecode = bcGen.generate(tac);          // → bytecode
+VM vm(bytecode);
+vm.run();                                      // → execution
 ```
 
 Each component lives in its own directory and only depends on the component before it.
@@ -923,7 +927,306 @@ to the exact bytecode index of the target instruction.
 
 ---
 
-## 8. How They All Connect
+## 8. Phase 7 — Virtual Machine Execution
+
+### Theory: What Is a Virtual Machine?
+
+A **virtual machine (VM)** is a software abstraction that simulates a hardware processor.
+Instead of executing machine code directly on CPU-specific instruction sets (like x86 or ARM),
+a VM executes a **portable bytecode** — instructions that are independent of the underlying
+hardware.
+
+**Why use a VM?**
+
+1. **Portability**: Compile once to bytecode, run on any machine with a VM implementation.
+2. **Safety**: The VM can enforce memory bounds, type checking, and sandbox untrusted code.
+3. **Simplicity**: VM design is simpler than generating native machine code.
+4. **Flexibility**: Can easily add new features (GC, JIT, profiling) in the VM layer.
+
+**Stack-Based VMs:**
+
+LiveLy uses a **stack-based architecture** — the most common model:
+
+```
+Stack (implicit)           Memory (variables)
+┌───────────────────────┐   ┌──────────────────┐
+│ (top)      [sp]       │   │ x    = 10        │
+│            [sp-1]     │   │ y    = 11        │
+│            [sp-2]     │   │ temp = 5         │
+│ (bottom)   [sp-...]   │   │ ...              │
+└───────────────────────┘   └──────────────────┘
+```
+
+**Instruction categories:**
+
+| Category | Examples | Effect |
+|----------|----------|--------|
+| **Stack Ops** | `PUSH_CONST`, `LOAD`, `STORE` | Manage stack & memory |
+| **Arithmetic** | `ADD`, `SUB`, `MUL`, `DIV` | Pop 2, compute, push 1 |
+| **Comparison** | `GT`, `LT`, `GE`, `LE`, `EQ`, `NEQ` | Pop 2, compute bool, push 1 |
+| **Control Flow** | `JUMP`, `JUMP_IF_FALSE` | Change instruction pointer |
+| **Output** | `PRINT` | Pop and print to stdout |
+
+**Execution Loop (pseudocode):**
+
+```
+ip = 0
+while ip < bytecode.length:
+    instr = bytecode[ip]
+    switch instr.opcode:
+        case PUSH_CONST:  stack.push(instr.operand)
+        case LOAD:        stack.push(memory[instr.operand])
+        case ADD:         stack.push(stack.pop() + stack.pop())
+        case JUMP:        ip = instr.target; continue
+        case JUMP_IF_FALSE:
+            cond = stack.pop()
+            if (!cond) ip = instr.target; continue
+        case PRINT:       cout << stack.pop()
+    ip++
+```
+
+The VM repeatedly fetches an instruction, executes it, and advances the instruction pointer
+until the bytecode is exhausted.
+
+### LiveLy Implementation
+
+**Files:** `src/vm/vm.h`, `src/vm/vm.cpp`
+
+#### VM State
+
+```cpp
+class VM {
+private:
+    std::vector<Instruction> instructions;  // bytecode
+    std::vector<int> stack;                  // operand stack
+    std::unordered_map<std::string, int> memory;  // variable storage
+    int ip = 0;                              // instruction pointer
+};
+```
+
+Three key members:
+- **`instructions`**: The bytecode program — immutable after construction.
+- **`stack`**: The operand stack — grows/shrinks as instructions execute.
+- **`memory`**: Variable bindings — stores the runtime value of every declared variable.
+- **`ip`**: Instruction pointer — tracks the current bytecode index (advanced after each instruction).
+
+#### Stack Operations
+
+```cpp
+void VM::push(int value) {
+    stack.push_back(value);
+}
+
+int VM::pop() {
+    if (stack.empty()) throw std::runtime_error("Stack underflow");
+    int value = stack.back();
+    stack.pop_back();
+    return value;
+}
+```
+
+These are minimal stubs — safety checking (underflow detection) is in place.
+
+#### Operand Resolution
+
+```cpp
+int VM::resolveValue(const std::string& operand) {
+    if (operand.empty()) return 0;
+
+    // Check if operand is a numeric literal
+    if (std::isdigit(operand[0]) || 
+        (operand[0] == '-' && operand.size() > 1 && std::isdigit(operand[1]))) {
+        return std::stoi(operand);
+    }
+
+    // Otherwise, look up variable in memory
+    if (memory.find(operand) == memory.end()) {
+        throw std::runtime_error("Undefined variable: " + operand);
+    }
+    return memory[operand];
+}
+```
+
+This helper handles both numeric literals (via `stoi()`) and variable names (via memory lookup).
+
+#### Execution Loop
+
+```cpp
+void VM::run() {
+    while (ip < instructions.size()) {
+        const Instruction& instr = instructions[ip];
+
+        switch (instr.op) {
+        // ---- Stack / Memory ----
+        case OpCode::PUSH_CONST:
+            if (instr.operand == "alive")      push(1);
+            else if (instr.operand == "dead")  push(0);
+            else                               push(std::stoi(instr.operand));
+            break;
+
+        case OpCode::LOAD:
+            push(resolveValue(instr.operand));
+            break;
+
+        case OpCode::STORE: {
+            int value = pop();
+            memory[instr.operand] = value;
+            break;
+        }
+
+        // ---- Arithmetic ----
+        case OpCode::ADD: {
+            int b = pop();
+            int a = pop();
+            push(a + b);
+            break;
+        }
+        // (SUB, MUL, DIV follow the same pattern)
+
+        // ---- Comparisons ----
+        case OpCode::GT: {
+            int b = pop();
+            int a = pop();
+            push(a > b);  // C++ bool implicitly converts to 1/0
+            break;
+        }
+        // (LT, GE, LE, EQ, NEQ follow the same pattern)
+
+        // ---- Control Flow ----
+        case OpCode::JUMP:
+            ip = std::stoi(instr.operand);
+            continue;  // skip the ip++ at the end
+
+        case OpCode::JUMP_IF_FALSE: {
+            int condition = pop();
+            if (!condition) {
+                ip = std::stoi(instr.operand);
+                continue;  // skip the ip++
+            }
+            break;
+        }
+
+        // ---- Output ----
+        case OpCode::PRINT: {
+            int value = pop();
+            std::cout << value << std::endl;
+            break;
+        }
+
+        default:
+            throw std::runtime_error("Unknown opcode");
+        }
+
+        ip++;  // advance to next instruction (unless control flow changed it)
+    }
+}
+```
+
+**Key details:**
+
+- **Boolean literals:** `alive` → `1`, `dead` → `0` (native C++ `int`).
+- **Stack discipline:** Arithmetic ops pop their arguments **in reverse order**.
+  For `ADD`, we pop `b` first, then `a`, so the result is `a + b` (not `b + a`).
+- **Control flow:** `JUMP` and `JUMP_IF_FALSE` use `continue` to skip the `ip++` at the
+  loop's end — the instruction pointer is already set to the jump target.
+- **In-order error checking:** Variable lookups fail at runtime if used before declaration
+  (runtime error, not a compile-time semantic error).
+
+#### Example Execution: `emit 0;`
+
+Bytecode:
+```
+0: PUSH_CONST 0
+1: PRINT
+```
+
+Execution trace:
+```
+ip=0:  PUSH_CONST 0    stack=[0],   memory={}
+ip=1:  PRINT           stack=[],    memory={},   output: "0\n"
+ip=2:  (end)
+```
+
+#### Example Execution: Loop from `loop_test.lv`
+
+Bytecode:
+```
+ 0: PUSH_CONST 0
+ 1: STORE i
+ 2: LOAD i
+ 3: PUSH_CONST 10
+ 4: LT
+ 5: STORE t0
+ 6: LOAD t0
+ 7: JUMP_IF_FALSE 15
+ 8: LOAD i
+ 9: PUSH_CONST 1
+10: ADD
+11: STORE t1
+12: LOAD t1
+13: STORE i
+14: JUMP 2
+15: LOAD i
+16: PRINT
+```
+
+Execution summary (simplified):
+```
+ip=0-1:  i = 0                   memory={i:0}
+ip=2-5:  t0 = i < 10             memory={i:0, t0:1}
+ip=6-7:  jump_if_false 15        (cond=1, continue)
+ip=8-13: i = i + 1               memory={i:1, t0:?}
+ip=14:   jump 2                  (loop back)
+
+[Loop repeats until i=10]
+
+ip=2-5:  t0 = 10 < 10            memory={i:10, t0:0}
+ip=6-7:  jump_if_false 15        (cond=0, jump to 15)
+ip=15-16: emit i                 output: "10\n"
+```
+
+### Integration with the Compiler
+
+In `main.cpp`, the VM is invoked immediately after bytecode generation:
+
+```cpp
+BytecodeGenerator bcGen;
+auto bytecode = bcGen.generate(tac);          // → bytecode
+
+std::cout << "\n[Phase 8] Virtual machine executing bytecode...\n";
+VM vm(bytecode);
+vm.run();                                      // → execution
+```
+
+No separate compilation step is needed — the VM receives the bytecode vector directly
+and begins executing it.
+
+### Testing the VM
+
+A standalone test executable (`lively_vm_tests`) verifies VM behavior independently
+of the compiler pipeline:
+
+```cpp
+// Minimal test: 2 + 3 * 4 = 20
+const std::vector<Instruction> program = {
+    Instruction(OpCode::PUSH_CONST, "2"),
+    Instruction(OpCode::PUSH_CONST, "3"),
+    Instruction(OpCode::PUSH_CONST, "4"),
+    Instruction(OpCode::MUL),       // 3 * 4 = 12
+    Instruction(OpCode::ADD),       // 2 + 12 = 14
+    Instruction(OpCode::PRINT)
+};
+
+VM vm(program);
+vm.run();  // outputs: 14
+```
+
+This test runs entirely in isolation from lexer/parser/compiler phases, ensuring
+the VM's core execution logic is sound.
+
+---
+
+## 9. How They All Connect
 
 ### The Complete Data Flow
 
@@ -1025,8 +1328,10 @@ pipeline from end to end.
 | Semantic | Symbol Table + Type System | Scope stack with inside-out lookup and recursive type inference | `semantic.cpp` |
 | TAC (IR) | Three-Address Code | Linearises AST into flat instructions with temps and labels | `tac_generator.cpp` |
 | Bytecode | Stack-machine instructions | Two-pass compiler: label resolution then code emission | `bytecode_generator.cpp` |
+| Virtual Machine | Stack-based interpreter | Execute bytecode with operand stack + variable memory | `vm.cpp` |
 
 Each phase transforms the program into a progressively more refined representation,
 catching different classes of errors along the way. Phases 1–4 form the **frontend**
-(validation and structure), while Phases 5–6 form the **middle-end** (lowering to
-executable form). The **backend** (VM execution, JIT compilation) is next.
+(validation and structure), Phases 5–6 form the **middle-end** (lowering to
+executable form), and Phase 7 forms the **backend** (execution via VM). The complete
+pipeline runs automatically when `lively <source_file>` is executed or tests are run.

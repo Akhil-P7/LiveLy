@@ -10,6 +10,7 @@
 #include "semantic/semantic.h"
 #include "ir/tac_generator.h"
 #include "bytecode/bytecode_generator.h"
+#include "vm/vm.h"
 
 // Helper: Convert TokenType to a human-readable string.
 std::string tokenTypeToString(TokenType type) {
@@ -193,6 +194,11 @@ int main(int argc, char* argv[]) {
                 std::cout << " " << bytecode[i].operand;
             std::cout << "\n";
         }
+
+        // PHASE 8: Virtual Machine Execution
+        std::cout << "\n[Phase 8] Virtual machine executing bytecode...\n";
+        VM vm(bytecode);
+        vm.run();
 
         std::cout << "\n[OK] All compiler phases completed successfully.\n";
 
